@@ -261,6 +261,9 @@ class Gemma4SelfAttention(SelfAttention):
     def __init__(self, config: TransformerConfig, submodules, layer_number: int, *args, **kwargs):
         attention_config = copy.copy(config)
         attention_config.softmax_scale = 1.0 if config.softmax_scale is None else config.softmax_scale
+        # Gemma4 always uses per-head Q/K normalization; signal this so SelfAttention.__init__
+        # accepts q_layernorm/k_layernorm in the submodule spec without raising an error.
+        attention_config.qk_layernorm = True
 
         is_sliding = is_layer_window_attention(
             config.window_size, config.window_attn_skip_freq, layer_number
