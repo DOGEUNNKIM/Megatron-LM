@@ -40,9 +40,16 @@ class MegatronCheckpointSaverBase:
         Check for an appropriate installation of transformer engine and add megatron to sys path.
         """
         # Transformer engine >= 0.12.0, for CPU initialization.
-        te_version = PkgVersion(version("transformer-engine"))
-        assert te_version >= PkgVersion("0.12.0"), \
-            "transformer engine version: %s (>=0.12.0 required)." % te_version
+        # TE is not required when using the local transformer impl (e.g. Gemma4).
+        # We cannot know the effective transformer_impl here (before md is received),
+        # so we allow TE to be absent and let the saver fail later if it actually needs it.
+        try:
+            from importlib.metadata import PackageNotFoundError
+            te_version = PkgVersion(version("transformer-engine"))
+            assert te_version >= PkgVersion("0.12.0"), \
+                "transformer engine version: %s (>=0.12.0 required)." % te_version
+        except PackageNotFoundError:
+            pass
 
         # Search in directory above this
         sys.path.append(os.path.abspath(
@@ -127,6 +134,8 @@ class MegatronCheckpointSaverBase:
         if not self.build_tokenizer:
             margs.tokenizer_model = None
         margs.transformer_impl = self.args.saver_transformer_impl
+        if getattr(self.md, 'gemma4', False):
+            margs.transformer_impl = "local"
         if self.args.saver_transformer_impl == "local" and margs.normalization == "RMSNorm":
             margs.no_persist_layer_norm = True
 
@@ -380,6 +389,9 @@ class MegatronCheckpointSaverBase:
         if self.md.position_embedding_type == 'learned_absolute':
             pos_embed = embeddings_msg.pop("position embeddings")
         orig_word_embed = embeddings_msg.pop("word embeddings")
+        orig_per_layer_embed = embeddings_msg.pop("per layer embeddings", None)
+        orig_per_layer_model_proj = embeddings_msg.pop("per layer model proj", None)
+        per_layer_proj_norm = embeddings_msg.pop("per layer proj norm", None)
         self.check_message(embeddings_msg)
 
         # Deal with padding
@@ -415,6 +427,16 @@ class MegatronCheckpointSaverBase:
 
         # Split into new tensor model parallel sizes
         out_word_embed = torch.chunk(full_word_embed, self.args.target_tensor_parallel_size, dim=0)
+        out_per_layer_embed = None
+        if orig_per_layer_embed is not None:
+            out_per_layer_embed = torch.chunk(
+                orig_per_layer_embed, self.args.target_tensor_parallel_size, dim=0
+            )
+        out_per_layer_model_proj = None
+        if orig_per_layer_model_proj is not None:
+            out_per_layer_model_proj = torch.chunk(
+                orig_per_layer_model_proj, self.args.target_tensor_parallel_size, dim=0
+            )
 
         # Set embeddings.
         # --------------
@@ -423,10 +445,17 @@ class MegatronCheckpointSaverBase:
                 model = self.get_local_model(0, ep_rank, tp_rank)
                 if pos_embed is None:
                     assert not schema.has_position_embeddings(model)
-                schema.set("embeddings", model, {
+                params_dict = {
                     "pos" : pos_embed,
                     "word" : out_word_embed[tp_rank],
-                })
+                }
+                if out_per_layer_embed is not None:
+                    params_dict.update({
+                        "per_layer_embeddings": out_per_layer_embed[tp_rank],
+                        "per_layer_model_proj": out_per_layer_model_proj[tp_rank],
+                        "per_layer_proj_norm": per_layer_proj_norm,
+                    })
+                schema.set("embeddings", model, params_dict)
 
         # Transformer layers.
         # ------------------
@@ -440,7 +469,20 @@ class MegatronCheckpointSaverBase:
 
                 # duplicated tensors
                 input_norm_weight = msg.pop("input norm weight")
-                post_norm_weight = msg.pop("post norm weight")
+                post_norm_weight = msg.pop("post norm weight", None)
+                if post_norm_weight is None and getattr(self.md, 'gemma4', False):
+                    post_norm_weight = msg.pop("pre mlp norm weight")
+                _GEMMA4_KEYS = {
+                    "post attn norm weight": "post_self_attn_norm_weight",
+                    "post mlp norm weight": "post_mlp_norm_weight",
+                    "q norm weight": "q_norm_weight",
+                    "k norm weight": "k_norm_weight",
+                    "ple gate weight": "ple_gate_weight",
+                    "ple proj weight": "ple_proj_weight",
+                    "ple norm weight": "ple_norm_weight",
+                    "ple scalar": "ple_scalar",
+                }
+                gemma4_extras = {dst: msg.pop(src, None) for src, dst in _GEMMA4_KEYS.items()}
                 if self.md.norm_has_bias:
                     input_norm_bias = msg.pop("input norm bias")
                     post_norm_bias = msg.pop("post norm bias")
@@ -453,10 +495,19 @@ class MegatronCheckpointSaverBase:
                 if self.margs.num_experts:
                     router = msg.pop("router weight")
 
-                # Special handling for swiglu
+                # Special handling for swiglu / geglu:
+                # Megatron's ColumnParallelLinear with stride=2 stores [gate_rank0, up_rank0, ...]
+                # (interleaved). We must split gate and up separately then cat per rank.
                 if self.md.swiglu:
                     mlp_l0_weight_W = chunk_weight(msg.pop("mlp l0 weight W"), "column", self.args.target_tensor_parallel_size, self.args.target_expert_parallel_size)
                     mlp_l0_weight_V = chunk_weight(msg.pop("mlp l0 weight V"), "column", self.args.target_tensor_parallel_size, self.args.target_expert_parallel_size)
+                    mlp_l0_weight = torch.cat((mlp_l0_weight_W, mlp_l0_weight_V), dim=-2)
+                elif getattr(self.md, 'geglu', False):
+                    # GEGLU: loader sends combined [gate, up] weight. Split and interleave per rank.
+                    full = msg.pop("mlp l0 weight")
+                    half = full.shape[0] // 2
+                    mlp_l0_weight_W = chunk_weight(full[:half], "column", self.args.target_tensor_parallel_size, self.args.target_expert_parallel_size)
+                    mlp_l0_weight_V = chunk_weight(full[half:], "column", self.args.target_tensor_parallel_size, self.args.target_expert_parallel_size)
                     mlp_l0_weight = torch.cat((mlp_l0_weight_W, mlp_l0_weight_V), dim=-2)
                 else:
                     mlp_l0_weight = chunk_weight(msg.pop("mlp l0 weight"), "column", self.args.target_tensor_parallel_size, self.args.target_expert_parallel_size)
@@ -496,6 +547,8 @@ class MegatronCheckpointSaverBase:
                             "self_attn_norm_bias" : input_norm_bias if self.md.norm_has_bias else None,
                             "mlp_norm_bias" : post_norm_bias if self.md.norm_has_bias else None,
                         })
+                        if getattr(self.md, 'gemma4', False):
+                            params_dict.update(gemma4_extras)
                         if self.md.qkv_bias:
                             params_dict.update({
                                 "self_attn_qkv_bias" : qkv_bias[tp_rank]

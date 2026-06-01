@@ -52,12 +52,33 @@ class MegatronCheckpointSaverLLM(MegatronCheckpointSaverBase):
 
     def receive_model(self):
         # Model schema.
+        transformer_impl = self.margs.transformer_impl
+        extra_layer_schema = {}
+        if getattr(self.md, 'gemma4', False):
+            transformer_impl = 'local'
+            extra_layer_schema = {
+                "post_self_attn_norm_weight": "post_self_attn_layernorm.weight",
+                "post_mlp_norm_weight": "post_mlp_layernorm.weight",
+                "q_norm_weight": "self_attention.q_layernorm.weight",
+                "k_norm_weight": "self_attention.k_layernorm.weight",
+                "ple_gate_weight": "per_layer_input_gate.weight",
+                "ple_proj_weight": "per_layer_projection.weight",
+                "ple_norm_weight": "post_per_layer_input_norm.weight",
+                "ple_scalar": "layer_scalar",
+            }
         schema = get_model_schema(
             self.md.model_type,
-            self.margs.transformer_impl,
+            transformer_impl,
             self.margs.num_experts,
             self.margs.expert_model_parallel_size,
+            extra_layer_schema=extra_layer_schema,
         )
+        if getattr(self.md, 'gemma4', False):
+            schema["embeddings"].update({
+                "per_layer_embeddings": "per_layer_embedding.weight",
+                "per_layer_model_proj": "per_layer_model_proj.weight",
+                "per_layer_proj_norm": "per_layer_proj_norm.weight",
+            })
         self.receive_lm(schema)
 
 def save_checkpoint(queue, args):
