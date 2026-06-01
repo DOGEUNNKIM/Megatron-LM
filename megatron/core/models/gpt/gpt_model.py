@@ -267,6 +267,9 @@ class GPTModel(LanguageModule):
             pg_collection=self.pg_collection,
             vp_stage=vp_stage,
         )
+        if getattr(self.config, 'num_kv_shared_layers', 0) > 0:
+            from megatron.core.models.gpt.gemma4_layer_specs import wire_gemma4_kv_sharing
+            wire_gemma4_kv_sharing(self)
 
         if self.mtp_process:
             self.mtp = MultiTokenPredictionBlock(

@@ -186,7 +186,8 @@ def _load_args_from_checkpoint(args, hf_config):
     args.rotary_base = hf_config.get('rope_theta', 10000)
     args.normalization = 'RMSNorm'
     args.swiglu = False
-    args.geglu = True
+    args.geglu = False
+    args.geglu_tanh = True
     args.quick_geglu = False
     args.add_bias_linear = False
     args.untie_embeddings_and_output_weights = not hf_config.get('tie_word_embeddings', False)

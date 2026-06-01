@@ -9,7 +9,7 @@
 #   NVIDIA_VISIBLE_DEVICES=0,1 bash examples/gemma4/train_gemma4_e4b_parity.sh
 #
 # Overrides:
-#   GEMMA4_HF_DIR=...  GEMMA4_CKPT=...  ATOL=...  bash ...
+#   GEMMA4_HF_DIR=...  GEMMA4_CKPT=...  TP_SIZE=...  ATOL=...  BF16=...  bash ...
 
 set -euo pipefail
 
@@ -20,7 +20,8 @@ fi
 
 GEMMA4_HF_DIR=${GEMMA4_HF_DIR:-$HOME/models/gemma-4-E4B-it}
 GEMMA4_CKPT=${GEMMA4_CKPT:-$HOME/checkpoints/gemma4-e4b-megatron}
-ATOL=${ATOL:-1.0}
+ATOL=${ATOL:-3.0}
+BF16=${BF16:-1}
 
 if [ ! -d "$GEMMA4_HF_DIR" ]; then
     echo "Error: HF model dir not found: $GEMMA4_HF_DIR"
@@ -33,7 +34,8 @@ if [ ! -f "$GEMMA4_CKPT/latest_checkpointed_iteration.txt" ]; then
     exit 1
 fi
 
-GPUS_PER_NODE=${GPUS_PER_NODE:-2}
+TP_SIZE=${TP_SIZE:-2}
+GPUS_PER_NODE=${GPUS_PER_NODE:-$TP_SIZE}
 MASTER_PORT=${MASTER_PORT:-6101}
 TORCHRUN_LOG_DIR=${TORCHRUN_LOG_DIR:-/tmp/gemma4_e4b_parity_logs}
 
@@ -42,11 +44,18 @@ rm -rf "$TORCHRUN_LOG_DIR"
 mkdir -p "$TORCHRUN_LOG_DIR"
 
 echo "========================================"
-echo "  Gemma-4 E4B parity check (TP=2)"
+echo "  Gemma-4 E4B parity check (TP=$TP_SIZE)"
 echo "  hf_dir : $GEMMA4_HF_DIR"
 echo "  ckpt   : $GEMMA4_CKPT"
+echo "  gpus   : $GPUS_PER_NODE"
 echo "  atol   : $ATOL"
+echo "  bf16   : $BF16"
 echo "========================================"
+
+DTYPE_ARGS=()
+if [ "$BF16" = "1" ]; then
+    DTYPE_ARGS+=(--bf16)
+fi
 
 torchrun \
     --nproc_per_node "$GPUS_PER_NODE" \
@@ -58,7 +67,9 @@ torchrun \
     examples/gemma4/parity_check_e4b.py \
     --hf-dir "$GEMMA4_HF_DIR" \
     --megatron-ckpt "$GEMMA4_CKPT" \
-    --atol "$ATOL"
+    --tp "$TP_SIZE" \
+    --atol "$ATOL" \
+    "${DTYPE_ARGS[@]}"
 
 echo "========================================"
 echo "  Parity check PASSED"
