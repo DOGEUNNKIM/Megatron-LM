@@ -315,6 +315,18 @@ def core_transformer_config_from_args(args, config_class=None):
     if args.squared_relu:
         assert not args.swiglu
         kw_args['activation_func'] = squared_relu
+    elif getattr(args, 'geglu_tanh', False):
+        assert not args.swiglu
+        assert not getattr(args, 'geglu', False)
+        assert not args.quick_geglu
+        from functools import partial
+        kw_args['gated_linear_unit'] = True
+        kw_args['activation_func'] = partial(F.gelu, approximate='tanh')
+    elif getattr(args, 'geglu', False):
+        assert not args.swiglu
+        assert not args.quick_geglu
+        kw_args['gated_linear_unit'] = True
+        kw_args['activation_func'] = F.gelu
     elif args.quick_geglu:
         assert not args.swiglu
         kw_args['gated_linear_unit'] = True

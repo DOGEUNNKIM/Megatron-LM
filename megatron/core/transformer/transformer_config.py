@@ -162,6 +162,15 @@ class TransformerConfig(ModelParallelConfig):
     """Projection weights dimension in multi-head attention. This is set to hidden_size //
     num_attention_heads if not provided."""
 
+    global_kv_channels: Optional[int] = None
+    """Projection weights dimension per attention head for full-attention layers.
+    Gemma-4 uses a wider full-attention head dimension than sliding-window layers.
+    When None, full-attention layers use kv_channels."""
+
+    num_global_query_groups: Optional[int] = None
+    """Number of query groups for full-attention layers. When None, full-attention layers use
+    num_query_groups."""
+
     hidden_dropout: float = 0.1
     """Dropout probability for transformer hidden state."""
 
@@ -229,6 +238,48 @@ class TransformerConfig(ModelParallelConfig):
     """Frequency of full attention layers among sliding window attention layers. Accepts either:
     - An integer N: Represents a (N-1):1 ratio, one full attention layer after (N-1) SWA layers.
     - A list that defines a custom pattern, e.g.: [1,1,1,1,0,0,0,0], where 1 represents SWA. """
+
+    sliding_window_rope_base: Optional[float] = None
+    """RoPE theta for sliding-window attention layers (Gemma-4 dual-RoPE). When both
+    ``sliding_window_rope_base`` and ``full_attention_rope_base`` are set, ``rotary_base``
+    is ignored and each layer type uses its own theta. Default None (disabled)."""
+
+    full_attention_rope_base: Optional[float] = None
+    """RoPE theta for full-attention layers (Gemma-4 dual-RoPE).
+    See ``sliding_window_rope_base``. Default None (disabled)."""
+
+    full_attention_rope_partial_factor: float = 1.0
+    """Fraction of head_dim to rotate in full-attention layers (Gemma-4 dual-RoPE).
+    Gemma-4 uses 0.25 (only the first 25%% of head dims are rotated). Default 1.0."""
+
+    per_layer_embed_vocab_size: int = 0
+    """Vocabulary size of the per-layer embedding table (Gemma-4 Per-Layer Embeddings).
+    When > 0, each transformer layer receives an additional per-token embedding signal
+    added to the query states. Default 0 (disabled)."""
+
+    per_layer_embed_dim: int = 0
+    """Dimension of each layer's per-layer embedding vector (Gemma-4 PLE).
+    Typically equals kv_channels (head_dim). Only used when per_layer_embed_vocab_size > 0."""
+
+    scale_embeddings_by_hidden_size: bool = False
+    """Scale token embeddings by sqrt(hidden_size). Gemma-4 text embeddings apply this scale
+    before the decoder and before computing per-layer embedding projections."""
+
+    num_kv_shared_layers: int = 0
+    """Number of final Gemma-4 layers that reuse K/V states from the last non-shared layer
+    of the same attention type. Default 0 disables shared-KV behavior."""
+
+    attention_k_eq_v: bool = False
+    """Whether full-attention Gemma-4 layers use the K projection as V."""
+
+    enable_moe_block: bool = False
+    """Whether Gemma-4 decoder layers include the optional parallel MoE branch."""
+
+    moe_intermediate_size: Optional[int] = None
+    """Intermediate size for the optional Gemma-4 MoE experts."""
+
+    top_k_experts: int = 1
+    """Number of experts selected by the optional Gemma-4 MoE router."""
 
     normalization: Literal['LayerNorm', 'RMSNorm'] = "LayerNorm"
     """Which norm to use for normalization layers, valid options are `LayerNorm` and `RMSNorm`."""

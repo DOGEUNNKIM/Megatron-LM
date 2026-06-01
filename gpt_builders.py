@@ -77,6 +77,10 @@ def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_
             use_transformer_engine=use_te,
             vp_stage=vp_stage,
         )
+        if getattr(config, "num_kv_shared_layers", 0) > 0:
+            from megatron.core.models.gpt.gemma4_layer_specs import wire_gemma4_kv_sharing
+
+            wire_gemma4_kv_sharing(model)
 
     model = GPTModel(
         config=config,

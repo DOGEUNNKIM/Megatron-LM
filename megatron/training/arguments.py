@@ -4,6 +4,7 @@
 
 import argparse
 import dataclasses
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -2158,6 +2159,10 @@ def _add_network_size_args(parser):
                        help='Use gated linear units and SiLU activation instead of default gelu')
     group.add_argument('--quick-geglu', action='store_true',
                        help='Use quick geglu activation instead of default gelu')
+    group.add_argument('--geglu', action='store_true',
+                       help='Use GeGLU activation with torch GELU instead of default gelu')
+    group.add_argument('--geglu-tanh', action='store_true',
+                       help='Use GeGLU activation with tanh-approximate GELU (matches Gemma4 hidden_activation=gelu_pytorch_tanh)')
     group.add_argument('--onnx-safe', type=bool, required=False,
                        help='Use workarounds for known problems with '
                        'Torch ONNX exporter')

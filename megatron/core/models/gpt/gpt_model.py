@@ -164,17 +164,31 @@ class GPTModel(LanguageModule):
             )
 
         if self.position_embedding_type == 'rope' and not self.config.multi_latent_attention:
-            self.rotary_pos_emb = RotaryEmbedding(
-                kv_channels=self.config.kv_channels,
-                rotary_percent=rotary_percent,
-                rotary_interleaved=self.config.rotary_interleaved,
-                seq_len_interpolation_factor=seq_len_interpolation_factor,
-                rotary_base=rotary_base,
-                rope_scaling=rope_scaling,
-                rope_scaling_factor=rope_scaling_factor,
-                use_cpu_initialization=self.config.use_cpu_initialization,
-                cp_group=self.pg_collection.cp,
+            _dual_rope = (
+                getattr(self.config, 'sliding_window_rope_base', None) is not None
+                and getattr(self.config, 'full_attention_rope_base', None) is not None
             )
+            if _dual_rope:
+                from megatron.core.models.gpt.gemma4_layer_specs import Gemma4RotaryEmbedding
+                self.rotary_pos_emb = Gemma4RotaryEmbedding(
+                    config=self.config,
+                    rotary_percent=rotary_percent,
+                    seq_len_interpolation_factor=seq_len_interpolation_factor,
+                    use_cpu_initialization=self.config.use_cpu_initialization,
+                    cp_group=self.pg_collection.cp,
+                )
+            else:
+                self.rotary_pos_emb = RotaryEmbedding(
+                    kv_channels=self.config.kv_channels,
+                    rotary_percent=rotary_percent,
+                    rotary_interleaved=self.config.rotary_interleaved,
+                    seq_len_interpolation_factor=seq_len_interpolation_factor,
+                    rotary_base=rotary_base,
+                    rope_scaling=rope_scaling,
+                    rope_scaling_factor=rope_scaling_factor,
+                    use_cpu_initialization=self.config.use_cpu_initialization,
+                    cp_group=self.pg_collection.cp,
+                )
 
         elif self.position_embedding_type == 'yarn':
             self.rotary_pos_emb = YarnRotaryEmbedding(
@@ -211,6 +225,38 @@ class GPTModel(LanguageModule):
 
         # Cache for RoPE tensors which do not change between iterations.
         self.rotary_pos_emb_cache = {}
+
+        # Per-Layer Embeddings (Gemma-4 PLE)
+        # Reference: Gemma4TextModel in HF transformers (modeling_gemma4.py)
+        # per_layer_inputs = (norm(linear(embed)) + embed_lookup) × 1/√2
+        _ple_vocab = getattr(self.config, 'per_layer_embed_vocab_size', 0)
+        _ple_dim = getattr(self.config, 'per_layer_embed_dim', 0)
+        if _ple_vocab > 0 and _ple_dim > 0 and (self.pre_process or self.mtp_process):
+            from megatron.core.models.gpt.gemma4_layer_specs import Gemma4RMSNorm
+            _n_layers = self.config.num_layers
+            # Token embedding lookup (vocab-parallel; output gathered across TP)
+            self.per_layer_embedding = tensor_parallel.VocabParallelEmbedding(
+                _ple_vocab,
+                _n_layers * _ple_dim,
+                config=self.config,
+                init_method=self.config.init_method,
+            )
+            # Projection from hidden states: hidden_size → n_layers × ple_dim
+            self.per_layer_model_proj = tensor_parallel.ColumnParallelLinear(
+                self.config.hidden_size,
+                _n_layers * _ple_dim,
+                config=self.config,
+                init_method=self.config.init_method,
+                bias=False,
+                gather_output=True,
+                tp_group=self.pg_collection.tp,
+            )
+            # RMSNorm over ple_dim (replicated across TP ranks)
+            self.per_layer_proj_norm = Gemma4RMSNorm(self.config, _ple_dim, eps=self.config.layernorm_epsilon)
+        else:
+            self.per_layer_embedding = None
+            self.per_layer_model_proj = None
+            self.per_layer_proj_norm = None
 
         # Transformer.
         self.decoder = TransformerBlock(
@@ -332,6 +378,8 @@ class GPTModel(LanguageModule):
                     f"input_ids shape {input_ids.shape}"
                 )
             decoder_input = self.embedding(input_ids=input_ids, position_ids=position_ids)
+            if getattr(self.config, 'scale_embeddings_by_hidden_size', False):
+                decoder_input = decoder_input * (self.config.hidden_size ** 0.5)
             if padding_mask is not None and self.config.sequence_parallel:
                 padding_mask = (
                     tensor_parallel.scatter_to_sequence_parallel_region(
@@ -453,6 +501,38 @@ class GPTModel(LanguageModule):
             if not has_config_logger_enabled(self.config):
                 decoder_input = WrappedTensor(decoder_input)
 
+        # Per-layer embeddings (Gemma-4 PLE)
+        # Matches HF: per_layer_inputs = (norm(linear(embed)) + embed_lookup) × 1/√2
+        # Shape: [b, s_local, num_layers, ple_dim]  (s_local = s/tp when sequence_parallel)
+        per_layer_inputs = None
+        if self.per_layer_embedding is not None and input_ids is not None:
+            _ple_dim = self.config.per_layer_embed_dim
+            _n_layers = self.config.num_layers
+            _b = input_ids.shape[0]
+
+            # 1. Token embedding lookup: [b, s, n_layers * ple_dim]
+            tok_emb = self.per_layer_embedding(input_ids)
+            tok_emb = tok_emb * (_ple_dim ** 0.5)  # embed_scale = sqrt(ple_dim)
+            if self.config.sequence_parallel:
+                from megatron.core.tensor_parallel import scatter_to_sequence_parallel_region
+                # Scatter along sequence dim to match scattered decoder_input
+                tok_emb = scatter_to_sequence_parallel_region(
+                    tok_emb.transpose(0, 1)  # [s, b, ...]
+                ).transpose(0, 1)  # [b, s/tp, ...]
+            _s_local = tok_emb.shape[1]
+            tok_emb = tok_emb.view(_b, _s_local, _n_layers, _ple_dim)
+
+            # 2. Model projection from hidden states: decoder_input [s_local, b, h]
+            mdl_proj, _ = self.per_layer_model_proj(
+                decoder_input.transpose(0, 1)  # [b, s_local, h]
+            )  # [b, s_local, n_layers * ple_dim]
+            mdl_proj = mdl_proj * (self.config.hidden_size ** -0.5)
+            mdl_proj = mdl_proj.view(_b, _s_local, _n_layers, _ple_dim)
+            mdl_proj = self.per_layer_proj_norm(mdl_proj)
+
+            # 3. Combine: [b, s_local, n_layers, ple_dim]
+            per_layer_inputs = (mdl_proj + tok_emb) * (2.0 ** -0.5)
+
         preproc_output = (
             decoder_input,
             rotary_pos_emb,
@@ -460,13 +540,11 @@ class GPTModel(LanguageModule):
             rotary_pos_sin,
             sequence_len_offset,
             padding_mask,
+            per_layer_inputs,
         )
         if rotary_pos_cos_sin is not None:
             # only in the case of flashinfer fused rope will we
             # return this extra tensor
-            # this is for backwards compatibility with
-            # legacy unit tests, which break if you
-            # return a 7 tuple instead of 6.
             preproc_output += (rotary_pos_cos_sin,)
 
         return preproc_output
@@ -555,9 +633,14 @@ class GPTModel(LanguageModule):
             rotary_pos_sin,
             sequence_len_offset,
             padding_mask,
-        ) = preproc_output[:6]
+            per_layer_inputs,
+        ) = preproc_output[:7]
 
-        rotary_pos_cos_sin = preproc_output[6] if len(preproc_output) == 7 else None
+        rotary_pos_cos_sin = preproc_output[7] if len(preproc_output) == 8 else None
+
+        ple_kwargs = {}
+        if per_layer_inputs is not None:
+            ple_kwargs['per_layer_inputs'] = per_layer_inputs
 
         # Run decoder.
         hidden_states = self.decoder(
@@ -571,6 +654,7 @@ class GPTModel(LanguageModule):
             packed_seq_params=packed_seq_params,
             sequence_len_offset=sequence_len_offset,
             padding_mask=padding_mask,
+            **ple_kwargs,
             **(extra_block_kwargs or {}),
         )
 

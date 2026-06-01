@@ -31,6 +31,7 @@ def checkpointed_forward(
     padding_mask: Optional[Tensor] = None,
     extract_layer_indices: Optional[Set[int]] = None,
     layer_offset: int = 0,
+    per_layer_inputs: Optional[Tensor] = None,
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Forward method with activation checkpointing.
 
@@ -52,7 +53,8 @@ def checkpointed_forward(
 
     def custom(start: int, end: int):
         def custom_forward(
-            hidden_states, attention_mask, context, context_mask, rotary_pos_emb, padding_mask=None
+            hidden_states, attention_mask, context, context_mask, rotary_pos_emb,
+            padding_mask=None, per_layer_inputs=None,
         ):
             for index in range(start, end):
                 # Use self.layers[index] (not self._get_layer) so this
@@ -89,6 +91,11 @@ def checkpointed_forward(
                     packed_seq_params=packed_seq_params,
                     padding_mask=padding_mask,
                 )
+                if per_layer_inputs is not None:
+                    global_layer_idx = layer.layer_number - 1
+                    layer_kwargs['per_layer_input'] = per_layer_inputs[
+                        :, :, global_layer_idx, :
+                    ].transpose(0, 1)
                 with inner_quantization_context:
                     if isinstance(layer, TransformerLayer):
                         hidden_states, context = layer(**layer_kwargs)
@@ -108,7 +115,8 @@ def checkpointed_forward(
     def chunk_runner(start: int, end: int, use_checkpoint: bool):
         nonlocal hidden_states, context
         cf = custom(start, end)
-        args = (hidden_states, attention_mask, context, context_mask, rotary_pos_emb, padding_mask)
+        args = (hidden_states, attention_mask, context, context_mask, rotary_pos_emb,
+                padding_mask, per_layer_inputs)
         if use_checkpoint:
             # Precision-aware activation checkpoint: TE under FP8/FP4,
             # tensor_parallel under BF16/FP16/FP32.
