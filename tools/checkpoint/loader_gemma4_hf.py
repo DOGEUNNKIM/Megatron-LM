@@ -426,8 +426,8 @@ def _set_layer_state(args, model, hf_model, layer_idx):
 def _load_checkpoint_to_model(margs):
     """Build a Megatron mcore GPT model and fill it with HF weights."""
 
-    from model_provider import model_provider
     from gpt_builders import gpt_builder
+    from model_provider import model_provider
 
     # Load HF model on CPU
     dtype = (
@@ -483,12 +483,13 @@ def _load_checkpoint(queue, args):
         sys.path.insert(0, args.megatron_path)
 
     try:
-        from megatron.training.arguments import parse_args, validate_args
-        from megatron.training.global_vars import set_args, set_global_variables
-        from megatron.legacy.model import module
+        from utils import _ConverterFakeProcessGroup
+
         from megatron.core import mpu
         from megatron.core.enums import ModelType
-        from utils import _ConverterFakeProcessGroup
+        from megatron.legacy.model import module
+        from megatron.training.arguments import parse_args, validate_args
+        from megatron.training.global_vars import set_args, set_global_variables
     except ModuleNotFoundError as exc:
         print(f"Unable to import Megatron ({exc}). Use --megatron-path to specify its location.")
         queue.put("exit")

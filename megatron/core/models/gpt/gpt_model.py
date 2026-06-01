@@ -515,6 +515,7 @@ class GPTModel(LanguageModule):
             tok_emb = tok_emb * (_ple_dim ** 0.5)  # embed_scale = sqrt(ple_dim)
             if self.config.sequence_parallel:
                 from megatron.core.tensor_parallel import scatter_to_sequence_parallel_region
+
                 # Scatter along sequence dim to match scattered decoder_input
                 tok_emb = scatter_to_sequence_parallel_region(
                     tok_emb.transpose(0, 1)  # [s, b, ...]

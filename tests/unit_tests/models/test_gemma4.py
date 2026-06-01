@@ -340,11 +340,10 @@ class TestGemma4VNorm:
     def test_v_norm_normalises_values(self):
         """Gemma4SelfAttention.get_query_key_value_tensors applies unit-variance norm to values."""
         from megatron.core.models.backends import LocalSpecProvider
+        from megatron.core.models.gpt.gemma4_layer_specs import Gemma4RMSNorm as RMSNorm
         from megatron.core.transformer.attention import SelfAttentionSubmodules
         from megatron.core.transformer.enums import AttnMaskType
         from megatron.core.transformer.spec_utils import ModuleSpec
-
-        from megatron.core.models.gpt.gemma4_layer_specs import Gemma4RMSNorm as RMSNorm
 
         backend = LocalSpecProvider()
         attn_spec = ModuleSpec(
@@ -540,11 +539,10 @@ class TestGemma4HFNumericalParity:
 
     def _build_megatron_attention(self, config, layer_number: int):
         from megatron.core.models.backends import LocalSpecProvider
+        from megatron.core.models.gpt.gemma4_layer_specs import Gemma4RMSNorm as RMSNorm
         from megatron.core.transformer.attention import SelfAttentionSubmodules
         from megatron.core.transformer.enums import AttnMaskType
         from megatron.core.transformer.spec_utils import ModuleSpec
-
-        from megatron.core.models.gpt.gemma4_layer_specs import Gemma4RMSNorm as RMSNorm
 
         backend = LocalSpecProvider()
         attn_spec = ModuleSpec(
@@ -1244,8 +1242,9 @@ class TestGemma4SharedKVParity:
         ]
 
     def _wire(self, layers):
-        from megatron.core.models.gpt.gemma4_layer_specs import wire_gemma4_kv_sharing
         import torch.nn as nn
+
+        from megatron.core.models.gpt.gemma4_layer_specs import wire_gemma4_kv_sharing
         wire_gemma4_kv_sharing(nn.ModuleList(layers))
 
     # ------------------------------------------------------------------
@@ -1575,11 +1574,10 @@ class TestGemma4KEqualsVParity:
 
     def _build_attn(self, config, layer_number):
         from megatron.core.models.backends import LocalSpecProvider
+        from megatron.core.models.gpt.gemma4_layer_specs import Gemma4RMSNorm as RMSNorm
         from megatron.core.transformer.attention import SelfAttentionSubmodules
         from megatron.core.transformer.enums import AttnMaskType
         from megatron.core.transformer.spec_utils import ModuleSpec
-
-        from megatron.core.models.gpt.gemma4_layer_specs import Gemma4RMSNorm as RMSNorm
 
         backend = LocalSpecProvider()
         spec = ModuleSpec(
@@ -2255,6 +2253,7 @@ class TestGemma4MoEBlockParity:
     def _copy_layer_moe(self, megatron_layer, hf_layer, hf_config, layer_idx):
         """Copy weights from HF to Megatron (uses loader _set_layer_state)."""
         import types
+
         from tools.checkpoint.loader_gemma4_hf import _set_layer_state
 
         model = types.SimpleNamespace(

@@ -1,12 +1,13 @@
 # Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 import json
 import os
-from importlib.metadata import version
-from packaging.version import Version as PkgVersion
 import sys
-import torch
+from importlib.metadata import version
 
+import torch
+from packaging.version import Version as PkgVersion
 from utils import _ConverterFakeProcessGroup, chunk_bias, chunk_weight
+
 
 class MegatronCheckpointSaverBase:
     """Orchestrates saving a Megatron checkpoint using parameters received on a multiprocessing queue.
@@ -146,8 +147,8 @@ class MegatronCheckpointSaverBase:
         Initialize Megatron global variables and fused kernels.
         """
         try:
-            from megatron.training.global_vars import set_global_variables, get_args
             from megatron.core import mpu
+            from megatron.training.global_vars import get_args, set_global_variables
         except ModuleNotFoundError as e:
             print(f"Unable to import required Megatron modules: {e}")
             sys.exit(1)
@@ -352,8 +353,8 @@ class MegatronCheckpointSaverBase:
         Save local models in self.models to a megatron checkpoint.
         """
         try:
-            from megatron.training.checkpointing import save_checkpoint
             from megatron.core import mpu
+            from megatron.training.checkpointing import save_checkpoint
         except ModuleNotFoundError as e:
             print(f"Unable to import required Megatron modules: {e}")
             sys.exit(1)

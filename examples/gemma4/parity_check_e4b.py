@@ -91,20 +91,21 @@ def main():
 
     sys.argv = _build_megatron_argv(args.megatron_ckpt, tp=args.tp, bf16=args.bf16)
 
-    from megatron.training.arguments import parse_and_validate_args
-    from megatron.training.initialize import initialize_megatron
-    from megatron.training.checkpointing import load_checkpoint
-    from megatron.training import get_model
     from megatron.core import mpu
     from megatron.core.enums import ModelType
+    from megatron.training import get_model
+    from megatron.training.arguments import parse_and_validate_args
+    from megatron.training.checkpointing import load_checkpoint
+    from megatron.training.initialize import initialize_megatron
 
     parse_and_validate_args()
     initialize_megatron()
     rank = dist.get_rank()
 
     from functools import partial
-    from pretrain_gpt import model_provider
+
     from gpt_builders import gpt_builder
+    from pretrain_gpt import model_provider
     models = get_model(partial(model_provider, gpt_builder), ModelType.encoder_or_decoder)
     model = models[0]
     load_checkpoint(models, None, None)
